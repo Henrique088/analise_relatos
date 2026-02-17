@@ -1,163 +1,140 @@
-# # A URL base da API
-# url = 'http://192.168.15.135:11434/api/generate'
-
-# # Os dados que vamos enviar (o payload)
-# data = {
-#     "model": "deepseek-r1:1.5b-qwen-distill-q8_0",
-#     "prompt": "Escreva um pequeno poema sobre o mar.",
-#     "stream": False  # Pode mudar para True e iterar sobre a resposta se quiser streaming
-# }
 from flask import Flask, request, jsonify
+import json
 import requests
 import logging
 import re
+from flask_cors import CORS # Recomendado para evitar erros no React
 
-# Configuração básica de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app) # Libera o acesso para o seu frontend React
 
-# Configurações - Altere conforme necessário
 OLLAMA_API_URL = "http://192.168.15.135:11434/api/generate"
-MODEL_NAME = "deepseek-r1:1.5b-qwen-distill-q8_0"
+MODEL_NAME = "llama3" # Atualizado para Llama 3
 
-def extrair_gravidade(resposta):
+def gerar_cards_dashboard(mood, intensidade, periodo):
     """
-    Função para extrair apenas a palavra de gravidade da resposta do modelo
+    Gera cards personalizados com base no estado emocional e período do dia.
     """
-    # Remove tudo antes da última tag de think se existir
-    if '<think>' in resposta and '</think>' in resposta:
-        partes = resposta.split('</think>')
-        if len(partes) > 1:
-            resposta = partes[1].strip()
-    
-    # Procura por qualquer uma das três palavras, ignorando maiúsculas/minúsculas
-    padrao = r'\b(grave|mediano|leve)\b'
-    correspondencia = re.search(padrao, resposta, re.IGNORECASE)
-    
-    if correspondencia:
-        return correspondencia.group(1).lower()
-    else:
-        # Se não encontrou, tenta simplificar ainda mais
-        resposta_limpa = resposta.strip().lower()
-        if resposta_limpa in ['grave', 'mediano', 'leve']:
-            return resposta_limpa
-        return "indeterminado"
+    # Criamos um contexto dinâmico para a IA
+    contexto_usuario = f"O usuário relatou estar se sentindo '{mood}' (intensidade {intensidade}/5) durante o período da '{periodo}'."
 
-def gerar_resposta_ollama(relato):
+    prompt = f"""
+    {contexto_usuario}
+
+    Com base nisso, gere 3 cards para um dashboard de saúde mental em português.
+    A 'Dica do Dia' deve ser prática para o momento, a 'Estatística' deve ser um dado de bem-estar relevante ao mood, e a 'Motivação' deve ser um acolhimento.
+
+    Retorne APENAS um objeto JSON puro, sem textos extras, seguindo rigorosamente este modelo:
+    {{
+      "periodo": "{periodo}",
+      "cards": [
+        {{"title": "Dica do Dia", "content": "..."}},
+        {{"title": "Estatística", "content": "..."}},
+        {{"title": "Motivação", "content": "..."}}
+      ]
+    }}
     """
-    Função para enviar o relato para a API do Ollama e retornar a resposta
-    """
-    prompt = f"""CLASSIFICAÇÃO DE GRAVIDADE - REGRAS ESTRITAS:
-
-RELATO: "{relato}"
-
-CRITÉRIOS DE CLASSIFICAÇÃO:
-- GRAVE: Situações críticas, emergenciais, risco de vida, pensamentos suicidas, violência
-- MEDIANO: Problemas significativos mas não emergenciais, conflitos moderados, preocupações sérias  
-- LEVE: Desconfortos menores, aborrecimentos do dia-a-dia, situações normais, sentimentos positivos
-
-EXEMPLOS:
-- "Pensei em me matar hoje" → GRAVE
-- "Estou com muita dor no peito" → GRAVE  
-- "Tive uma discussão forte no trabalho" → MEDIANO
-- "Estou com dor de cabeça leve" → LEVE
-- "Me sinto feliz hoje" → LEVE
-- "Tudo tranquilo" → LEVE
-
-INSTRUÇÕES FINAIS:
-1. Analise o relato acima pelos critérios
-2. Responda APENAS com uma palavra: grave, mediano ou leve
-3. Não explique, não pense em voz alta, não use tags
-
-RESPOSTA:"""
 
     payload = {
         "model": MODEL_NAME,
         "prompt": prompt,
         "stream": False,
-        "options": {
-            "temperature": 0.0,  # Temperatura zero para máxima consistência
-            # "num_predict": 5,    # Apenas 5 tokens de resposta
-            # "stop": ["\n", ".", ","]  # Para na primeira quebra de linha ou pontuação
-        }
+        "format": "json",
+        "options": { "temperature": 0.8 } # Aumentado levemente para maior criatividade na personalização
     }
 
     try:
-        logger.info(f"Enviando relato: {relato[:50]}...")
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=40)
+        response.raise_for_status()
+
+        resposta_ollama = response.json()
+        logger.info(f"Resposta bruta do Ollama: {resposta_ollama}")  # Debug
+        
+        resposta_texto = response.json().get('response', '').strip()
+        return json.loads(resposta_texto)
+        
+    except Exception as e:
+        logger.error(f"Erro ao gerar cards personalizados: {e}")
+        # Fallback também estruturado no novo formato
+        return {
+            "periodo": periodo,
+            "cards": [
+                {"title": "Dica do Dia", "content": "Tire 5 minutos para uma respiração consciente agora."},
+                {"title": "Lembrete", "content": "Sua saúde mental é uma prioridade, não um luxo."},
+                {"title": "Apoio", "content": "Estamos aqui para acompanhar sua jornada, passo a passo."}
+            ]
+        }
+
+def gerar_resposta_ollama(relato):
+    """
+    Classifica a gravidade do relato de forma direta.
+    """
+    prompt = f"""Você é um assistente de triagem psicológica altamente treinado.
+Analise o relato do usuário abaixo para identificar o nível de suporte necessário.
+
+RELATO: "{relato}"
+
+CRITÉRIOS DE ANÁLISE:
+1. Sentimento: Qual a emoção predominante?
+2. Risco: Existe menção a autolesão, ideação suicida ou violência? (Isso torna o caso GRAVE imediatamente)
+3. Urgência: O usuário parece estar em crise aguda ou é um desabafo de cansaço acumulado?
+
+CLASSIFICAÇÕES POSSÍVEIS:
+- LEVE: Estresse cotidiano, sentimentos positivos ou desabafos sem sinais de ruptura emocional.
+- MEDIANO: Tristeza profunda, ansiedade nítida, conflitos interpessoais sérios, mas sem risco de vida.
+- GRAVE: Ideação suicida, automutilação, crises de pânico agudas ou desesperança extrema ("não aguento mais" sem contexto).
+
+Responda APENAS em formato JSON:
+{{
+  "analise_curta": "breve justificativa da sua decisão",
+  "gravidade": "leve/mediano/grave",
+  "pontuacao_risco": 1-10
+}}
+"""
+
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": False,
+        "options": { "temperature": 0.0 } # 0.0 para ser bem objetivo
+    }
+
+    try:
         response = requests.post(OLLAMA_API_URL, json=payload, timeout=30)
         response.raise_for_status()
+
+        print(response.json())        
+        # Pega a resposta e limpa pontuações
+        classificacao = response.json().get('response', '').strip().lower()
+        # Filtra apenas a palavra desejada caso a IA escreva uma frase
+        if 'grave' in classificacao: return 'grave'
+        if 'mediano' in classificacao: return 'mediano'
+        return 'leve'
         
-        data = response.json()
-        resposta_bruta = data.get('response', '').strip()
-        logger.info(f"Resposta bruta recebida: '{resposta_bruta}'")
-        
-        # Extrai apenas a palavra de gravidade
-        gravidade = extrair_gravidade(resposta_bruta)
-        
-        return gravidade
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Erro na comunicação com Ollama: {e}")
-        return "erro_conexao"
     except Exception as e:
-        logger.error(f"Erro inesperado: {e}")
-        return "erro_inesperado"
+        logger.error(f"Erro na classificação: {e}")
+        return "indeterminado"
 
 @app.route('/classificar-gravidade', methods=['GET'])
 def classificar_gravidade():
-    """
-    Endpoint que recebe o relato via parâmetro GET 'texto'
-    e retorna APENAS a classificação de gravidade
-    """
     relato = request.args.get('texto', '').strip()
-    
     if not relato:
-        return jsonify({
-            "erro": "Parâmetro 'texto' é obrigatório",
-            "exemplo": "http://localhost:5000/classificar-gravidade?texto=meu+relato+aqui"
-        }), 400
+        return jsonify({"erro": "Texto obrigatório"}), 400
     
     classificacao = gerar_resposta_ollama(relato)
-    
-    return jsonify({
-        "relato": relato,
-        "gravidade": classificacao,
-        "modelo": MODEL_NAME,
-        "status": "sucesso"
-    })
+    return jsonify({"relato": relato, "gravidade": classificacao})
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Endpoint para verificar se o servidor está rodando"""
-    return jsonify({"status": "online", "servico": "classificador-gravidade"})
-
-@app.route('/teste')
-def teste():
-    """Endpoint de teste com exemplos"""
-    exemplos = [
-        "Hoje estou me sentindo depressivo já pensei em suicidio",
-        "Estou com uma leve dor de cabeça",
-        "Tive uma discussão moderada no trabalho hoje",
-        "Me sinto muito bem hoje, tudo tranquilo"
-    ]
+@app.route('/cards-dashboard', methods=['GET'])
+def get_cards():
+    mood = request.args.get('mood', '').strip()
+    intensidade = request.args.get('intensidade', '').strip()
+    periodo = request.args.get('periodo', '').strip()
     
-    resultados = []
-    for exemplo in exemplos:
-        classificacao = gerar_resposta_ollama(exemplo)
-        resultados.append({"relato": exemplo, "gravidade": classificacao})
-    
-    return jsonify({"testes": resultados})
+    cards = gerar_cards_dashboard(mood, intensidade, periodo)
+    return jsonify(cards)
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("Servidor Classificador de Gravidade")
-    print("=" * 60)
-    print(f"Modelo: {MODEL_NAME}")
-    print(f"URL local: http://localhost:5000")
-    print(f"Endpoint: http://localhost:5000/classificar-gravidade?texto=SEU_RELATO_AQUI")
-    print(f"Teste: http://localhost:5000/teste")
-    print("=" * 60)
-    
     app.run(host='0.0.0.0', port=5000, debug=True)
